@@ -1,0 +1,13 @@
+# requirements.txt
+pyrogram==2.0.106
+tgcrypto
+poetry-core
+grpcio
+grpcio-tools
+m3u8
+requests
+ffmpeg-python
+python-dotenv
+tenacity
+async-lru
+creart
