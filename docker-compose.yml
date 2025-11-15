@@ -1,0 +1,13 @@
+version: '3.9'
+services:
+  bot:
+    build: .
+    container_name: applemusic_alac
+    restart: unless-stopped
+    environment:
+      - API_ID=1234567
+      - API_HASH=abcdef1234567890abcdef1234567890
+      - BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrSTUvwxYZ
+    volumes:
+      - ./downloads:/app/downloads
+      - ./assets:/app/assets   # device.wvd ထည့်ချင်ရင် ဒီမှာ ထည့်လို့ရတယ်
