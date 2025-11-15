@@ -22,7 +22,6 @@ from src.exceptions import NotTimeSyncedLyricsException
 from src.logger import GlobalLogger
 from src.models import PlaylistInfo
 from src.models.album_meta import Tracks
-from src.qemu import QemuInstance
 from src.types import *
 
 executor_pool = concurrent.futures.ThreadPoolExecutor()
