@@ -2,8 +2,8 @@
 version = "0.0.7"
 
 [instance]
-url = "127.0.0.1:8080"
-secure = false
+url = "wm.wol.moe:443"
+secure = true
 
 [localInstance]
 # Use qemu to launch wrapper-manager
