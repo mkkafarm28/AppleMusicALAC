@@ -24,7 +24,7 @@ startArgs = "-host 0.0.0.0 -port 32767 -debug"
 # The language of song metadata. Influence song title, author and other information.
 # Simplified Chinese: zh-Hans-CN, Tradidional Chinese(Hong Kong): zh-Hant-HK, Tradidional Chinese(Taiwan): zh-Hant-TW
 # English(British): en-GB, English(American): en-US, Japanese: ja, Korean: ko
-language = "zh-Hant-HK"
+language = "en-US"
 # Pring warning when selected language does not exist on songs' region
 languageNotExistWarning = true
 
