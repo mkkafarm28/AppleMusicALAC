@@ -6,9 +6,9 @@ services:
     container_name: applemusic_alac_bot
     restart: unless-stopped
     environment:
-      - API_ID=your_api_id_here
-      - API_HASH=your_api_hash_here
-      - BOT_TOKEN=your_bot_token_here
+      - API_ID=11230592
+      - API_HASH=594fcd9717990fb853c3cae82d65afdc
+      - BOT_TOKEN=8205775273:AAHhS2A5ULbkEtpZ-2hyFazbRGdFLou8iXI
     volumes:
       - ./downloads:/app/downloads
       - ./assets:/app/assets
