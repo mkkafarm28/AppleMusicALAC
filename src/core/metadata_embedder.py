@@ -2,7 +2,7 @@
 import os
 import subprocess
 import requests
-from typing import str, Dict
+from typing import Dict
 from src.grpc.manager import WrapperManager
 
 async def embed(file_path: str, item: Dict, language: str, wrapper: WrapperManager = None) -> None:
