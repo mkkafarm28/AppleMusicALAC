@@ -1,7 +1,7 @@
 # src/core/segment_downloader.py
 import m3u8
 import requests
-from typing import Tuple, List, bytes
+from typing import Tuple, List
 
 async def download_segments(m3u8_url: str, adam_id: str) -> Tuple[bytes, List[str], int]:
     m3u8_obj = m3u8.load(m3u8_url)
