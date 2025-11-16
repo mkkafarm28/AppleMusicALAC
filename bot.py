@@ -73,8 +73,10 @@ async def start(client: Client, message: Message):
     )
 
 
-@app.on_message(filters.text & ~filters.command())
+@app.on_message(filters.text)
 async def handle_url(client: Client, message: Message):
+    if message.text.startswith('/'):
+        return  # Skip command messages
     url = message.text.strip()
     user_id = message.from_user.id
 
