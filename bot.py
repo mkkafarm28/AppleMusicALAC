@@ -73,7 +73,7 @@ async def start(client: Client, message: Message):
     )
 
 
-@app.on_message(filters.text & ~filters.command)
+@app.on_message(filters.text & ~filters.command())
 async def handle_url(client: Client, message: Message):
     url = message.text.strip()
     user_id = message.from_user.id
