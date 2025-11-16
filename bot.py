@@ -61,29 +61,28 @@ async def update_progress(msg: Message, cur: int, total: int, name: str):
 # ----------------------------------------------------------------------
 # Handlers
 # ----------------------------------------------------------------------
-@app.on_message(filters.command("start"))
+@app.on_message(filters.regex(r'^/start'))
 async def start(client: Client, message: Message):
-    logger.info(f"Received /start from {message.from_user.id}")
-    await message.reply(
-        "**Apple Music Downloader**\n\n"
-        "Send a **song / album / artist / playlist** URL.\n"
-        "Then choose codec.\n\n"
-        "Example:\n"
-        "https://music.apple.com/us/album/never-gonna-give-you-up/1441164362",
-        disable_web_page_preview=True
-    )
+    logger.info("Start command received")
+    try:
+        await message.reply(
+            "**Apple Music Downloader**\n\n"
+            "Send a **song / album / artist / playlist** URL.\n"
+            "Then choose codec.\n\n"
+            "Example:\n"
+            "https://music.apple.com/us/album/never-gonna-give-you-up/1441164362",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logger.error(f"Error replying to start: {e}")
 
 
 @app.on_message(filters.text)
 async def handle_url(client: Client, message: Message):
-    logger.info(f"Received text message: '{message.text}' from {message.from_user.id}")
     if message.text.startswith('/'):
-        logger.info("Skipping command message")
         return  # Skip command messages
     url = message.text.strip()
     user_id = message.from_user.id
-
-    logger.info(f"Processing URL: {url}")
 
     # Show codec buttons
     buttons = [[InlineKeyboardButton(text=v, callback_data=f"codec_{k}_{message.id}")] for k, v in CODECS.items()]
@@ -102,7 +101,6 @@ async def handle_url(client: Client, message: Message):
 
 @app.on_callback_query(filters.regex(r"^codec_(.+)_(\d+)$"))
 async def handle_codec(client: Client, query: CallbackQuery):
-    logger.info(f"Received callback: {query.data} from {query.from_user.id}")
     parts = query.data.split("_")
     codec = parts[1]
     orig_msg_id = parts[2]
@@ -121,7 +119,7 @@ async def handle_codec(client: Client, query: CallbackQuery):
         status_msg = await app.get_messages(query.message.chat.id, status_msg_id)
         await status_msg.edit_text(f"Downloading with **{CODECS[codec]}**...\n\n`{url}`")
     except:
-        status_msg = await query.message(f"Downloading with **{CODECS[codec]}**...")
+        status_msg = await query.message.reply(f"Downloading with **{CODECS[codec]}**...")
 
     # Cleanup state
     USER_STATE.pop(user_id, None)
@@ -176,20 +174,10 @@ async def handle_codec(client: Client, query: CallbackQuery):
 # ----------------------------------------------------------------------
 async def main():
     global wrapper, downloader
-    try:
-        wrapper = await WrapperManager().init(url="wm.wol.moe:443", secure=True)
-        logger.info("Wrapper initialized successfully")
-    except Exception as e:
-        logger.error(f"Failed to initialize wrapper: {e}")
-        return
+    wrapper = await WrapperManager().init(url="wm.wol.moe:443", secure=True)
     downloader = AppleMusicDownloader(wrapper)
     logger.info("Bot starting...")
-    try:
-        await app.start()
-        logger.info("Bot connected to Telegram")
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-        return
+    await app.start()
     await asyncio.Event().wait()
 
 
