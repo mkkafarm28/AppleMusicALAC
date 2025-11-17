@@ -1,7 +1,6 @@
 # bot.py
 import asyncio
 import os
-import logging
 import sys
 from pathlib import Path
 from pyrogram import Client, filters, idle, enums
@@ -11,15 +10,13 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     CallbackQuery,
 )
-from creart import it
+import logging
 
 # ════════════════════════════════════════════════════════
-# Import from main.py structure
+# Setup Basic Logging
 # ════════════════════════════════════════════════════════
-from src.logger import LoggerCreator, GlobalLogger
-from src.config import ConfigCreator, Config
-from src.api import APICreator
-from src.grpc.manager import WMCreator, WrapperManager
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════
 # Config
@@ -29,8 +26,6 @@ API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DOWNLOAD_BASE_DIR = Path("downloads")
 MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
-
-logger = GlobalLogger().logger
 
 app = None
 
@@ -48,19 +43,93 @@ USER_STATE = {}
 
 
 # ════════════════════════════════════════════════════════
-# Utility Functions
+# Download Logic - Direct Implementation
 # ════════════════════════════════════════════════════════
-async def update_progress(msg: Message, cur: int, total: int, name: str):
-    """Update progress message"""
-    if total == 0:
-        return
+async def download_music(url: str, output_dir: str, codec: str) -> list:
+    """
+    Download music using subprocess to call main.py's CLI
+    """
+    from subprocess import Popen, PIPE
+    import json
+    
+    logger.info(f"Starting download: {url} with codec {codec}")
+    
     try:
-        percent = cur / total
-        bar = "█" * int(percent * 10) + "░" * (10 - int(percent * 10))
-        text = f"<code>{name}</code>\n[{bar}] {percent:.1%}\n<code>{cur//1024} KB / {total//1024} KB</code>"
-        await msg.edit_text(text, parse_mode=enums.ParseMode.HTML)
+        # Create a temporary script that runs the download
+        script = f"""
+import asyncio
+import os
+import sys
+sys.path.insert(0, '/app')
+
+from creart import add_creator, it
+loop = asyncio.new_event_loop()
+
+from src.logger import LoggerCreator
+add_creator(LoggerCreator)
+
+from src.config import ConfigCreator, Config
+add_creator(ConfigCreator)
+
+from src.api import APICreator
+add_creator(APICreator)
+
+from src.grpc.manager import WMCreator, WrapperManager
+add_creator(WMCreator)
+
+from src.cmd import InteractiveShell
+
+async def main():
+    shell = InteractiveShell(loop)
+    await shell.do_download(
+        raw_url='{url}',
+        codec='{codec}',
+        force_download=False,
+        language='en-US',
+        include=False
+    )
+    # Wait for async tasks
+    await asyncio.sleep(3)
+
+loop.run_until_complete(main())
+"""
+        
+        # Write script to temp file
+        temp_script = Path("/tmp/download_runner.py")
+        temp_script.write_text(script)
+        
+        # Execute it
+        process = Popen(
+            [sys.executable, str(temp_script)],
+            stdout=PIPE,
+            stderr=PIPE,
+            cwd="/app"
+        )
+        
+        stdout, stderr = process.communicate(timeout=300)
+        
+        if process.returncode != 0:
+            logger.error(f"Download failed: {stderr.decode()}")
+            return []
+        
+        logger.info(f"Download output: {stdout.decode()}")
+        
+        # Find files in output directory
+        output_path = Path(output_dir)
+        if not output_path.exists():
+            logger.warning(f"Output directory not found: {output_dir}")
+            return []
+        
+        audio_files = []
+        for ext in ['.m4a', '.mp3', '.flac', '.aac', '.alac', '.wav']:
+            audio_files.extend(output_path.glob(f"*{ext}"))
+        
+        logger.info(f"Found {len(audio_files)} files")
+        return sorted(audio_files)
+        
     except Exception as e:
-        logger.debug(f"Progress update error: {e}")
+        logger.error(f"Download error: {e}", exc_info=True)
+        return []
 
 
 def get_audio_files(directory):
@@ -81,6 +150,22 @@ def get_audio_files(directory):
         logger.info(f"  - {f.name} ({f.stat().st_size / (1024**2):.2f} MB)")
     
     return sorted(files)
+
+
+# ════════════════════════════════════════════════════════
+# Utility Functions
+# ════════════════════════════════════════════════════════
+async def update_progress(msg: Message, cur: int, total: int, name: str):
+    """Update progress message"""
+    if total == 0:
+        return
+    try:
+        percent = cur / total
+        bar = "█" * int(percent * 10) + "░" * (10 - int(percent * 10))
+        text = f"<code>{name}</code>\n[{bar}] {percent:.1%}\n<code>{cur//1024} KB / {total//1024} KB</code>"
+        await msg.edit_text(text, parse_mode=enums.ParseMode.HTML)
+    except Exception as e:
+        logger.debug(f"Progress update error: {e}")
 
 
 # ════════════════════════════════════════════════════════
@@ -110,7 +195,6 @@ def setup_handlers(app_instance):
     @app_instance.on_message(filters.text)
     async def handle_url(client: Client, message: Message):
         """Handle URL messages"""
-        # Skip if it's a command
         if message.text.startswith('/'):
             return
         
@@ -119,7 +203,6 @@ def setup_handlers(app_instance):
         logger.info(f"🔗 URL received from {user_id}: {url}")
 
         try:
-            # Validate URL
             if "music.apple.com" not in url:
                 await message.reply(
                     "❌ Invalid URL. Please send an Apple Music link.",
@@ -127,7 +210,6 @@ def setup_handlers(app_instance):
                 )
                 return
 
-            # Create codec buttons
             buttons = []
             for codec_key, codec_name in CODECS.items():
                 buttons.append([
@@ -153,16 +235,13 @@ def setup_handlers(app_instance):
         except Exception as e:
             logger.error(f"❌ Error in handle_url: {e}", exc_info=True)
             try:
-                await message.reply(
-                    f"❌ Error: {str(e)}",
-                    parse_mode=enums.ParseMode.HTML
-                )
+                await message.reply(f"❌ Error: {str(e)}", parse_mode=enums.ParseMode.HTML)
             except:
                 pass
 
     @app_instance.on_callback_query(filters.regex(r"^codec_(.+)_(\d+)$"))
     async def handle_codec(client: Client, query: CallbackQuery):
-        """Handle codec selection - using the actual main.py architecture"""
+        """Handle codec selection"""
         status_msg = None
         try:
             parts = query.data.split("_")
@@ -171,22 +250,18 @@ def setup_handlers(app_instance):
             
             logger.info(f"🎵 Codec selected: {codec} by user {user_id}")
 
-            # Check if session exists
             if user_id not in USER_STATE:
                 await query.answer("❌ Session expired. Please send URL again.", show_alert=True)
-                logger.warning(f"⚠️ Session expired for user {user_id}")
                 return
 
             state = USER_STATE[user_id]
             url = state["url"]
             status_msg_id = state["msg_id"]
 
-            # Update status message
             try:
                 status_msg = await app_instance.get_messages(query.message.chat.id, status_msg_id)
                 await status_msg.edit_text(
-                    f"<b>⏳ Downloading with {CODECS[codec]}...</b>\n\n"
-                    f"<code>{url}</code>",
+                    f"<b>⏳ Downloading with {CODECS[codec]}...</b>\n\n<code>{url}</code>",
                     parse_mode=enums.ParseMode.HTML
                 )
             except:
@@ -197,92 +272,43 @@ def setup_handlers(app_instance):
 
             USER_STATE.pop(user_id, None)
 
-            # Create user directory
             user_dir = DOWNLOAD_BASE_DIR / str(user_id)
             user_dir.mkdir(parents=True, exist_ok=True)
 
             logger.info(f"📥 Starting download for {user_id} with codec: {codec}")
-            logger.info(f"📁 Download directory: {user_dir.absolute()}")
 
-            # ✅ Use the actual InteractiveShell's do_download logic
-            try:
-                # Get from creart
-                from src.cmd import InteractiveShell
-                shell = InteractiveShell(asyncio.get_event_loop())
-                
-                logger.info(f"⚙️ Calling do_download()...")
-                await shell.do_download(
-                    raw_url=url,
-                    codec=codec,
-                    force_download=False,
-                    language="en-US",
-                    include=False
-                )
-                
-                # Wait a bit for files to be created
-                await asyncio.sleep(2)
-                logger.info(f"✓ do_download() completed")
-                
-            except Exception as e:
-                logger.error(f"❌ Download error: {e}", exc_info=True)
-                await status_msg.edit_text(
-                    f"<b>❌ Download failed:</b>\n<code>{str(e)[:200]}</code>",
-                    parse_mode=enums.ParseMode.HTML
-                )
-                return
-
-            # Check directory for files
-            logger.info(f"🔍 Checking directory for audio files...")
-            audio_files = get_audio_files(str(user_dir))
-            
-            # Also check config download directory
-            if not audio_files:
-                logger.info(f"Checking config download directory...")
-                config_download_dir = Path(it(Config).download.dirPathFormat.split('{')[0])
-                if config_download_dir.exists():
-                    logger.info(f"Scanning: {config_download_dir}")
-                    audio_files = get_audio_files(str(config_download_dir))
+            # ✅ Call download function
+            audio_files = await download_music(url, str(user_dir), codec)
 
             if not audio_files:
-                logger.error(f"❌ No audio files found!")
-                logger.info(f"📁 Directory contents:")
-                if user_dir.exists():
-                    for item in user_dir.iterdir():
-                        logger.info(f"  - {item.name} (size: {item.stat().st_size / (1024**2):.2f} MB)")
-                
                 await status_msg.edit_text(
-                    "❌ Download failed. No audio files generated.\n"
-                    "This may be a wrapper-manager issue or invalid URL.",
+                    "❌ Download failed. No audio files generated.",
                     parse_mode=enums.ParseMode.HTML
                 )
+                logger.error(f"❌ No files generated")
                 return
 
             await status_msg.edit_text(
-                f"<b>✅ Downloaded {len(audio_files)} file(s)</b>\n"
-                f"<i>Uploading to Telegram...</i>",
+                f"<b>✅ Downloaded {len(audio_files)} file(s)</b>\n<i>Uploading to Telegram...</i>",
                 parse_mode=enums.ParseMode.HTML
             )
-            logger.info(f"✓ {len(audio_files)} file(s) ready for upload")
 
-            # Upload files
             uploaded_count = 0
             for file_path in audio_files:
                 path = Path(file_path)
                 if not path.exists():
-                    logger.warning(f"⚠️ File not found: {path}")
                     continue
 
                 file_size = path.stat().st_size
                 if file_size > MAX_FILE_SIZE:
-                    logger.warning(f"⚠️ File too large: {path.name} ({file_size/(1024**3):.2f} GB)")
                     await status_msg.edit_text(
-                        f"❌ {path.name} is too large ({file_size/(1024**3):.2f} GB)",
+                        f"❌ {path.name} is too large",
                         parse_mode=enums.ParseMode.HTML
                     )
                     continue
 
                 try:
-                    logger.info(f"📤 Uploading: {path.name} ({file_size / (1024**2):.2f} MB)")
+                    logger.info(f"📤 Uploading: {path.name}")
                     await query.message.reply_audio(
                         audio=str(path),
                         caption=f"<code>{path.name}</code>",
@@ -292,24 +318,22 @@ def setup_handlers(app_instance):
                     uploaded_count += 1
                     logger.info(f"✓ File sent: {path.name}")
                 except Exception as e:
-                    logger.error(f"❌ Error uploading {path.name}: {e}", exc_info=True)
+                    logger.error(f"❌ Upload error: {e}")
                     continue
 
-            # Final message
             try:
                 await status_msg.delete()
             except:
                 pass
             
             await query.message.reply(
-                f"<b>✅ Upload Complete!</b>\n"
-                f"<i>{uploaded_count} file(s) sent successfully</i>",
+                f"<b>✅ Upload Complete!</b>\n<i>{uploaded_count} file(s) sent</i>",
                 parse_mode=enums.ParseMode.HTML
             )
-            logger.info(f"✓ All files completed for user {user_id}")
+            logger.info(f"✓ Completed for user {user_id}")
 
         except Exception as e:
-            logger.error(f"❌ Error in handle_codec: {e}", exc_info=True)
+            logger.error(f"❌ Error: {e}", exc_info=True)
             if status_msg:
                 try:
                     await status_msg.edit_text(
@@ -326,16 +350,11 @@ def setup_handlers(app_instance):
 async def main():
     global app
     
-    # Validate credentials
     logger.info("🔐 Validating credentials...")
     if not API_ID or not API_HASH or not BOT_TOKEN:
-        logger.error("❌ Missing API_ID, API_HASH, or BOT_TOKEN")
+        logger.error("❌ Missing credentials")
         sys.exit(1)
-    logger.info(f"✓ API_ID: {API_ID}")
-    logger.info(f"✓ API_HASH: {API_HASH[:10]}...")
-    logger.info(f"✓ BOT_TOKEN: {BOT_TOKEN[:20]}...")
     
-    # Initialize Pyrogram Client
     logger.info("📱 Initializing Pyrogram Client...")
     try:
         app = Client(
@@ -344,41 +363,34 @@ async def main():
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
         )
-        logger.info("✓ Pyrogram Client initialized")
+        logger.info("✓ Client initialized")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Pyrogram Client: {e}", exc_info=True)
+        logger.error(f"❌ Client init failed: {e}")
         sys.exit(1)
     
-    # Setup handlers AFTER app is initialized
-    logger.info("📌 Setting up message handlers...")
+    logger.info("📌 Setting up handlers...")
     try:
         setup_handlers(app)
-        logger.info("✓ Message handlers registered")
+        logger.info("✓ Handlers registered")
     except Exception as e:
-        logger.error(f"❌ Failed to setup handlers: {e}", exc_info=True)
+        logger.error(f"❌ Handler setup failed: {e}")
         sys.exit(1)
     
-    # Start Bot
     logger.info("🤖 Starting Bot...")
     try:
         await app.start()
-        logger.info("✓✓✓ BOT STARTED SUCCESSFULLY ✓✓✓")
-        logger.info(f"📲 Bot is now listening for messages...")
-        logger.info("=" * 60)
+        logger.info("✓✓✓ BOT STARTED ✓✓✓")
     except Exception as e:
-        logger.error(f"❌ Failed to start bot: {e}", exc_info=True)
+        logger.error(f"❌ Bot start failed: {e}")
         sys.exit(1)
     
-    # Idle
-    logger.info("⏳ Bot is now idle and waiting for messages...")
+    logger.info("⏳ Bot ready for messages...")
     try:
         await idle()
     except KeyboardInterrupt:
-        logger.info("🛑 Shutting down...")
+        logger.info("Shutting down...")
     finally:
-        logger.info("Stopping bot...")
         await app.stop()
-        logger.info("✓ Bot stopped")
 
 
 if __name__ == "__main__":
@@ -389,7 +401,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        logger.info("Interrupted")
     except Exception as e:
-        logger.error(f"❌ Unexpected error: {e}", exc_info=True)
+        logger.error(f"❌ Error: {e}", exc_info=True)
         sys.exit(1)
