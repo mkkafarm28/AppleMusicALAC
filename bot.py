@@ -61,8 +61,11 @@ async def download_music(url: str, output_dir: str, codec: str) -> list:
 import sys
 sys.path.insert(0, '/app')
 
-# Register all creart creators
+# Register all creart creators - IMPORT MEASURER FIRST
 from creart import add_creator, it
+
+from src.measurer import MeasurerCreator
+add_creator(MeasurerCreator)
 
 from src.logger import LoggerCreator
 add_creator(LoggerCreator)
@@ -76,12 +79,12 @@ add_creator(APICreator)
 from src.grpc.manager import WMCreator, WrapperManager
 add_creator(WMCreator)
 
-from src.measurer import MeasurerCreator
-add_creator(MeasurerCreator)
-
 import asyncio
 
 async def download():
+    # Initialize WrapperManager
+    await it(WrapperManager).init("wm.wol.moe:443", True)
+    
     from src.cmd import AppleMusicURL, URLType
     from src.rip import rip_song, rip_album, rip_artist, rip_playlist
     from src.utils import GlobalLogger
