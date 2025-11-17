@@ -1,4 +1,4 @@
-# bot.py (အဓိက အပြောင်းအလဲ)
+# bot.py
 import asyncio
 import os
 import logging
@@ -57,6 +57,26 @@ async def update_progress(msg: Message, cur: int, total: int, name: str):
         await msg.edit_text(text, parse_mode=enums.ParseMode.HTML)
     except Exception as e:
         logger.debug(f"Progress update error: {e}")
+
+
+def get_audio_files(directory):
+    """Find all audio files in directory"""
+    audio_extensions = ['.m4a', '.mp3', '.flac', '.aac', '.alac', '.wav']
+    files = []
+    
+    path = Path(directory)
+    if not path.exists():
+        logger.warning(f"Directory not found: {directory}")
+        return files
+    
+    for ext in audio_extensions:
+        files.extend(path.glob(f"*{ext}"))
+    
+    logger.info(f"Found {len(files)} audio file(s) in {directory}")
+    for f in files:
+        logger.info(f"  - {f.name} ({f.stat().st_size / (1024**2):.2f} MB)")
+    
+    return sorted(files)
 
 
 # ════════════════════════════════════════════════════════
@@ -178,9 +198,12 @@ def setup_handlers(app_instance):
             user_dir.mkdir(parents=True, exist_ok=True)
 
             logger.info(f"📥 Starting download for {user_id} with codec: {codec}")
+            logger.info(f"📁 Download directory: {user_dir.absolute()}")
 
             # Download
+            result = None
             try:
+                logger.info(f"⚙️ Calling downloader.download()...")
                 result = await downloader.download(
                     url=url,
                     output_dir=str(user_dir),
@@ -191,33 +214,59 @@ def setup_handlers(app_instance):
                         update_progress(status_msg, cur, total, name)
                     ),
                 )
+                logger.info(f"✓ downloader.download() returned: {result}")
+                logger.info(f"  Type: {type(result)}")
+                logger.info(f"  Length: {len(result) if result else 0}")
+                
             except Exception as e:
                 logger.error(f"❌ Download error: {e}", exc_info=True)
                 await status_msg.edit_text(
-                    f"<b>❌ Download failed:</b>\n<code>{str(e)[:100]}</code>",
+                    f"<b>❌ Download failed:</b>\n<code>{str(e)[:200]}</code>",
                     parse_mode=enums.ParseMode.HTML
                 )
                 return
 
-            # Check results
-            if not result or not any(Path(p).exists() for p in result):
+            # Check directory for files
+            logger.info(f"🔍 Checking directory for audio files...")
+            audio_files = get_audio_files(str(user_dir))
+            
+            logger.info(f"📊 Result: {result}")
+            logger.info(f"📊 Found files: {audio_files}")
+
+            # Determine files to upload
+            files_to_upload = []
+            
+            if result and isinstance(result, (list, tuple)):
+                files_to_upload = [Path(p) for p in result if Path(p).exists()]
+                logger.info(f"✓ Using result list: {len(files_to_upload)} files")
+            elif audio_files:
+                files_to_upload = audio_files
+                logger.info(f"✓ Using directory scan: {len(files_to_upload)} files")
+            
+            if not files_to_upload:
+                logger.error(f"❌ No audio files found!")
+                logger.info(f"📁 Directory contents:")
+                if user_dir.exists():
+                    for item in user_dir.iterdir():
+                        logger.info(f"  - {item.name} (size: {item.stat().st_size / (1024**2):.2f} MB)")
+                
                 await status_msg.edit_text(
-                    "❌ Download failed. No files generated.",
+                    "❌ Download failed. No audio files generated.\n"
+                    "This may be a wrapper-manager issue or invalid URL.",
                     parse_mode=enums.ParseMode.HTML
                 )
-                logger.error(f"❌ No files generated for {user_id}")
                 return
 
             await status_msg.edit_text(
-                f"<b>✅ Downloaded {len(result)} file(s)</b>\n"
+                f"<b>✅ Downloaded {len(files_to_upload)} file(s)</b>\n"
                 f"<i>Uploading to Telegram...</i>",
                 parse_mode=enums.ParseMode.HTML
             )
-            logger.info(f"✓ {len(result)} file(s) downloaded, uploading to Telegram...")
+            logger.info(f"✓ {len(files_to_upload)} file(s) ready for upload")
 
             # Upload files
             uploaded_count = 0
-            for file_path in result:
+            for file_path in files_to_upload:
                 path = Path(file_path)
                 if not path.exists():
                     logger.warning(f"⚠️ File not found: {path}")
@@ -233,7 +282,7 @@ def setup_handlers(app_instance):
                     continue
 
                 try:
-                    logger.info(f"📤 Uploading: {path.name}")
+                    logger.info(f"📤 Uploading: {path.name} ({file_size / (1024**2):.2f} MB)")
                     await query.message.reply_audio(
                         audio=str(path),
                         caption=f"<code>{path.name}</code>",
@@ -244,7 +293,7 @@ def setup_handlers(app_instance):
                     path.unlink(missing_ok=True)
                     logger.info(f"✓ File sent: {path.name}")
                 except Exception as e:
-                    logger.error(f"❌ Error uploading {path.name}: {e}")
+                    logger.error(f"❌ Error uploading {path.name}: {e}", exc_info=True)
                     continue
 
             # Final message
