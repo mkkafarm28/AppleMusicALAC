@@ -11,6 +11,8 @@ from pyrogram.types import (
     CallbackQuery,
 )
 import logging
+import subprocess
+import time
 
 # ════════════════════════════════════════════════════════
 # Setup Basic Logging
@@ -43,28 +45,22 @@ USER_STATE = {}
 
 
 # ════════════════════════════════════════════════════════
-# Download Logic - Direct Implementation
+# Download Logic - Using subprocess with proper isolation
 # ════════════════════════════════════════════════════════
 async def download_music(url: str, output_dir: str, codec: str) -> list:
     """
-    Download music using subprocess to call main.py's CLI
+    Download music using subprocess in thread pool to avoid event loop conflicts
     """
-    from subprocess import Popen, PIPE
-    import json
-    
     logger.info(f"Starting download: {url} with codec {codec}")
     
     try:
-        # Create a temporary script that runs the download
+        # Create a temporary Python script
         script = f"""
-import asyncio
-import os
 import sys
 sys.path.insert(0, '/app')
 
+# Setup creart with all creators
 from creart import add_creator, it
-loop = asyncio.new_event_loop()
-
 from src.logger import LoggerCreator
 add_creator(LoggerCreator)
 
@@ -77,42 +73,79 @@ add_creator(APICreator)
 from src.grpc.manager import WMCreator, WrapperManager
 add_creator(WMCreator)
 
-from src.cmd import InteractiveShell
+# Run download using main.py's logic
+import asyncio
 
-async def main():
-    shell = InteractiveShell(loop)
-    await shell.do_download(
-        raw_url='{url}',
-        codec='{codec}',
-        force_download=False,
-        language='en-US',
-        include=False
-    )
-    # Wait for async tasks
-    await asyncio.sleep(3)
+async def download():
+    from src.rip import rip_song, rip_album, rip_artist, rip_playlist
+    from src.cmd import AppleMusicURL, URLType
+    from src.utils import GlobalLogger
+    
+    raw_url = '{url}'
+    codec = '{codec}'
+    
+    logger = GlobalLogger().logger
+    logger.info(f"Download script started for: {{raw_url}} with codec: {{codec}}")
+    
+    try:
+        # Parse URL
+        url_obj = AppleMusicURL.parse_url(raw_url)
+        if not url_obj:
+            logger.error("Failed to parse URL")
+            return
+        
+        logger.info(f"URL parsed: type={{url_obj.type}}, id={{url_obj.id}}")
+        
+        # Download based on type
+        if url_obj.type == URLType.Song:
+            logger.info("Downloading song...")
+            from src.rip import rip_song
+            await rip_song(url_obj, codec)
+        elif url_obj.type == URLType.Album:
+            logger.info("Downloading album...")
+            from src.rip import rip_album
+            await rip_album(url_obj, codec)
+        elif url_obj.type == URLType.Artist:
+            logger.info("Downloading artist...")
+            from src.rip import rip_artist
+            await rip_artist(url_obj, codec)
+        elif url_obj.type == URLType.Playlist:
+            logger.info("Downloading playlist...")
+            from src.rip import rip_playlist
+            await rip_playlist(url_obj, codec)
+        
+        logger.info("Download completed")
+        
+    except Exception as e:
+        logger.error(f"Download error: {{e}}", exc_info=True)
 
-loop.run_until_complete(main())
+asyncio.run(download())
 """
         
         # Write script to temp file
         temp_script = Path("/tmp/download_runner.py")
         temp_script.write_text(script)
         
-        # Execute it
-        process = Popen(
+        logger.info(f"Running download script: {temp_script}")
+        
+        # Execute in subprocess (completely isolated)
+        result = subprocess.run(
             [sys.executable, str(temp_script)],
-            stdout=PIPE,
-            stderr=PIPE,
-            cwd="/app"
+            cwd="/app",
+            timeout=600,
+            capture_output=True,
+            text=True
         )
         
-        stdout, stderr = process.communicate(timeout=300)
+        logger.info(f"Download script output:\n{result.stdout}")
+        if result.stderr:
+            logger.warning(f"Download script stderr:\n{result.stderr}")
         
-        if process.returncode != 0:
-            logger.error(f"Download failed: {stderr.decode()}")
-            return []
+        if result.returncode != 0:
+            logger.error(f"Download script failed with code {result.returncode}")
         
-        logger.info(f"Download output: {stdout.decode()}")
+        # Wait a bit for files to be written
+        await asyncio.sleep(3)
         
         # Find files in output directory
         output_path = Path(output_dir)
@@ -124,9 +157,12 @@ loop.run_until_complete(main())
         for ext in ['.m4a', '.mp3', '.flac', '.aac', '.alac', '.wav']:
             audio_files.extend(output_path.glob(f"*{ext}"))
         
-        logger.info(f"Found {len(audio_files)} files")
+        logger.info(f"Found {len(audio_files)} files in {output_dir}")
         return sorted(audio_files)
         
+    except subprocess.TimeoutExpired:
+        logger.error("Download timeout")
+        return []
     except Exception as e:
         logger.error(f"Download error: {e}", exc_info=True)
         return []
@@ -277,7 +313,7 @@ def setup_handlers(app_instance):
 
             logger.info(f"📥 Starting download for {user_id} with codec: {codec}")
 
-            # ✅ Call download function
+            # ✅ Call download function (runs in subprocess, no event loop conflict)
             audio_files = await download_music(url, str(user_dir), codec)
 
             if not audio_files:
