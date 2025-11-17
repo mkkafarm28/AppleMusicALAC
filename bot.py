@@ -4,7 +4,7 @@ import os
 import logging
 import sys
 from pathlib import Path
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters, idle, enums
 from pyrogram.types import (
     Message,
     InlineKeyboardButton,
@@ -47,19 +47,20 @@ USER_STATE = {}
 # Utility Functions
 # ════════════════════════════════════════════════════════
 async def update_progress(msg: Message, cur: int, total: int, name: str):
+    """Update progress message"""
     if total == 0:
         return
-    percent = cur / total
-    bar = "█" * int(percent * 10) + "░" * (10 - int(percent * 10))
-    text = f"`{name}`\n[{bar}] {percent:.1%}\n`{cur//1024} KB / {total//1024} KB`"
     try:
-        await msg.edit_text(text, parse_mode="markdown")
-    except Exception:
-        pass
+        percent = cur / total
+        bar = "█" * int(percent * 10) + "░" * (10 - int(percent * 10))
+        text = f"<code>{name}</code>\n[{bar}] {percent:.1%}\n<code>{cur//1024} KB / {total//1024} KB</code>"
+        await msg.edit_text(text, parse_mode=enums.ParseMode.HTML)
+    except Exception as e:
+        logger.debug(f"Progress update error: {e}")
 
 
 # ════════════════════════════════════════════════════════
-# Define Handlers (အဲဒီမှာ @app သုံးမယ်)
+# Define Handlers
 # ════════════════════════════════════════════════════════
 def setup_handlers(app_instance):
     """Setup all bot handlers"""
@@ -69,44 +70,70 @@ def setup_handlers(app_instance):
         logger.info(f"📌 /start command received from user {message.from_user.id}")
         try:
             await message.reply(
-                "**Apple Music Downloader**\n\n"
-                "Send a **song / album / artist / playlist** URL.\n"
+                "<b>🎵 Apple Music Downloader</b>\n\n"
+                "Send a <b>song / album / artist / playlist</b> URL.\n"
                 "Then choose codec.\n\n"
-                "Example:\n"
-                "https://music.apple.com/us/album/never-gonna-give-you-up/1441164362",
+                "<b>Example:</b>\n"
+                "<code>https://music.apple.com/us/album/never-gonna-give-you-up/1441164362</code>",
+                parse_mode=enums.ParseMode.HTML,
                 disable_web_page_preview=True
             )
             logger.info("✓ /start response sent")
         except Exception as e:
-            logger.error(f"❌ Error replying to start: {e}")
+            logger.error(f"❌ Error in /start handler: {e}", exc_info=True)
 
-    @app_instance.on_message(filters.text)
+    @app_instance.on_message(filters.text & ~filters.command)
     async def handle_url(client: Client, message: Message):
-        if message.text.startswith('/'):
-            return
-        
+        """Handle URL messages"""
         url = message.text.strip()
         user_id = message.from_user.id
         logger.info(f"🔗 URL received from {user_id}: {url}")
 
         try:
-            buttons = [[InlineKeyboardButton(text=v, callback_data=f"codec_{k}_{message.id}")] for k, v in CODECS.items()]
+            # Validate URL
+            if "music.apple.com" not in url:
+                await message.reply(
+                    "❌ Invalid URL. Please send an Apple Music link.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                return
+
+            # Create codec buttons
+            buttons = []
+            for codec_key, codec_name in CODECS.items():
+                buttons.append([
+                    InlineKeyboardButton(
+                        text=codec_name,
+                        callback_data=f"codec_{codec_key}_{message.id}"
+                    )
+                ])
             keyboard = InlineKeyboardMarkup(buttons)
 
             status_msg = await message.reply(
-                f"**URL Received!**\n\nChoose codec for:\n`{url}`",
+                f"<b>✅ URL Received!</b>\n\n"
+                f"<b>Choose codec for:</b>\n"
+                f"<code>{url}</code>",
                 reply_markup=keyboard,
-                parse_mode="markdown",
+                parse_mode=enums.ParseMode.HTML,
                 disable_web_page_preview=True
             )
             
             USER_STATE[user_id] = {"url": url, "msg_id": status_msg.id}
             logger.info(f"✓ Codec selection menu sent to {user_id}")
+            
         except Exception as e:
-            logger.error(f"❌ Error in handle_url: {e}")
+            logger.error(f"❌ Error in handle_url: {e}", exc_info=True)
+            try:
+                await message.reply(
+                    f"❌ Error: {str(e)}",
+                    parse_mode=enums.ParseMode.HTML
+                )
+            except:
+                pass
 
     @app_instance.on_callback_query(filters.regex(r"^codec_(.+)_(\d+)$"))
     async def handle_codec(client: Client, query: CallbackQuery):
+        """Handle codec selection"""
         status_msg = None
         try:
             parts = query.data.split("_")
@@ -115,8 +142,9 @@ def setup_handlers(app_instance):
             
             logger.info(f"🎵 Codec selected: {codec} by user {user_id}")
 
+            # Check if session exists
             if user_id not in USER_STATE:
-                await query.answer("Session expired.", show_alert=True)
+                await query.answer("❌ Session expired. Please send URL again.", show_alert=True)
                 logger.warning(f"⚠️ Session expired for user {user_id}")
                 return
 
@@ -124,64 +152,117 @@ def setup_handlers(app_instance):
             url = state["url"]
             status_msg_id = state["msg_id"]
 
+            # Update status message
             try:
                 status_msg = await app_instance.get_messages(query.message.chat.id, status_msg_id)
-                await status_msg.edit_text(f"Downloading with **{CODECS[codec]}**...\n\n`{url}`")
+                await status_msg.edit_text(
+                    f"<b>⏳ Downloading with {CODECS[codec]}...</b>\n\n"
+                    f"<code>{url}</code>",
+                    parse_mode=enums.ParseMode.HTML
+                )
             except:
-                status_msg = await query.message.reply(f"Downloading with **{CODECS[codec]}**...")
+                status_msg = await query.message.reply(
+                    f"<b>⏳ Downloading with {CODECS[codec]}...</b>",
+                    parse_mode=enums.ParseMode.HTML
+                )
 
             USER_STATE.pop(user_id, None)
 
+            # Create user directory
             user_dir = DOWNLOAD_BASE_DIR / str(user_id)
             user_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"📥 Starting download for {user_id}")
+            logger.info(f"📥 Starting download for {user_id} with codec: {codec}")
 
-            result = await downloader.download(
-                url=url,
-                output_dir=str(user_dir),
-                codec=codec,
-                force_overwrite=False,
-                metadata_language="en-US",
-                progress_callback=lambda cur, total, name: asyncio.create_task(
-                    update_progress(status_msg, cur, total, name)
-                ),
-            )
-
-            if not result or not any(Path(p).exists() for p in result):
-                await status_msg.edit("Download failed. Try again.")
-                logger.error(f"❌ Download failed for {user_id}")
+            # Download
+            try:
+                result = await downloader.download(
+                    url=url,
+                    output_dir=str(user_dir),
+                    codec=codec,
+                    force_overwrite=False,
+                    metadata_language="en-US",
+                    progress_callback=lambda cur, total, name: asyncio.create_task(
+                        update_progress(status_msg, cur, total, name)
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"❌ Download error: {e}", exc_info=True)
+                await status_msg.edit_text(
+                    f"<b>❌ Download failed:</b>\n<code>{str(e)[:100]}</code>",
+                    parse_mode=enums.ParseMode.HTML
+                )
                 return
 
-            await status_msg.edit(f"Downloaded {len(result)} file(s). Sending...")
+            # Check results
+            if not result or not any(Path(p).exists() for p in result):
+                await status_msg.edit_text(
+                    "❌ Download failed. No files generated.",
+                    parse_mode=enums.ParseMode.HTML
+                )
+                logger.error(f"❌ No files generated for {user_id}")
+                return
+
+            await status_msg.edit_text(
+                f"<b>✅ Downloaded {len(result)} file(s)</b>\n"
+                f"<i>Uploading to Telegram...</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
             logger.info(f"✓ {len(result)} file(s) downloaded, uploading to Telegram...")
 
+            # Upload files
+            uploaded_count = 0
             for file_path in result:
                 path = Path(file_path)
                 if not path.exists():
+                    logger.warning(f"⚠️ File not found: {path}")
                     continue
 
-                if path.stat().st_size > MAX_FILE_SIZE:
-                    await status_msg.edit(f"{path.name} too large.")
-                    logger.warning(f"⚠️ File too large: {path.name}")
+                file_size = path.stat().st_size
+                if file_size > MAX_FILE_SIZE:
+                    logger.warning(f"⚠️ File too large: {path.name} ({file_size/(1024**3):.2f} GB)")
+                    await status_msg.edit_text(
+                        f"❌ {path.name} is too large ({file_size/(1024**3):.2f} GB)",
+                        parse_mode=enums.ParseMode.HTML
+                    )
                     continue
 
-                await query.message.reply_audio(
-                    audio=str(path),
-                    caption=path.name,
-                    title=path.stem,
-                )
-                path.unlink(missing_ok=True)
-                logger.info(f"✓ File sent: {path.name}")
+                try:
+                    logger.info(f"📤 Uploading: {path.name}")
+                    await query.message.reply_audio(
+                        audio=str(path),
+                        caption=f"<code>{path.name}</code>",
+                        title=path.stem,
+                        parse_mode=enums.ParseMode.HTML,
+                    )
+                    uploaded_count += 1
+                    path.unlink(missing_ok=True)
+                    logger.info(f"✓ File sent: {path.name}")
+                except Exception as e:
+                    logger.error(f"❌ Error uploading {path.name}: {e}")
+                    continue
 
-            await status_msg.delete()
-            logger.info(f"✓ Download completed for user {user_id}")
+            # Final message
+            try:
+                await status_msg.delete()
+            except:
+                pass
+            
+            await query.message.reply(
+                f"<b>✅ Upload Complete!</b>\n"
+                f"<i>{uploaded_count} file(s) sent successfully</i>",
+                parse_mode=enums.ParseMode.HTML
+            )
+            logger.info(f"✓ All files completed for user {user_id}")
 
         except Exception as e:
             logger.error(f"❌ Error in handle_codec: {e}", exc_info=True)
             if status_msg:
                 try:
-                    await status_msg.edit(f"Error: {str(e)}")
+                    await status_msg.edit_text(
+                        f"<b>❌ Error:</b>\n<code>{str(e)[:100]}</code>",
+                        parse_mode=enums.ParseMode.HTML
+                    )
                 except:
                     pass
 
@@ -212,7 +293,7 @@ async def main():
         )
         logger.info("✓ Pyrogram Client initialized")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize Pyrogram Client: {e}")
+        logger.error(f"❌ Failed to initialize Pyrogram Client: {e}", exc_info=True)
         sys.exit(1)
     
     # Setup handlers AFTER app is initialized
@@ -227,7 +308,7 @@ async def main():
         await wrapper.init(url="wm.wol.moe:443", secure=True)
         logger.info("✓ WrapperManager initialized")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize WrapperManager: {e}")
+        logger.error(f"❌ Failed to initialize WrapperManager: {e}", exc_info=True)
         sys.exit(1)
     
     # Initialize AppleMusicDownloader
@@ -236,7 +317,7 @@ async def main():
         downloader = AppleMusicDownloader(wrapper)
         logger.info("✓ AppleMusicDownloader initialized")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize AppleMusicDownloader: {e}")
+        logger.error(f"❌ Failed to initialize AppleMusicDownloader: {e}", exc_info=True)
         sys.exit(1)
     
     # Start Bot
@@ -247,7 +328,7 @@ async def main():
         logger.info(f"📲 Bot is now listening for messages...")
         logger.info("=" * 60)
     except Exception as e:
-        logger.error(f"❌ Failed to start bot: {e}")
+        logger.error(f"❌ Failed to start bot: {e}", exc_info=True)
         sys.exit(1)
     
     # Idle
