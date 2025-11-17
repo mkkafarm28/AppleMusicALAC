@@ -11,9 +11,15 @@ from pyrogram.types import (
     InlineKeyboardMarkup,
     CallbackQuery,
 )
-from src.grpc.manager import WrapperManager
-from src.core.downloader import AppleMusicDownloader
-from src.utils import GlobalLogger
+from creart import it
+
+# ════════════════════════════════════════════════════════
+# Import from main.py structure
+# ════════════════════════════════════════════════════════
+from src.logger import LoggerCreator, GlobalLogger
+from src.config import ConfigCreator, Config
+from src.api import APICreator
+from src.grpc.manager import WMCreator, WrapperManager
 
 # ════════════════════════════════════════════════════════
 # Config
@@ -26,8 +32,6 @@ MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
 
 logger = GlobalLogger().logger
 
-wrapper: WrapperManager = None
-downloader: AppleMusicDownloader = None
 app = None
 
 CODECS = {
@@ -158,7 +162,7 @@ def setup_handlers(app_instance):
 
     @app_instance.on_callback_query(filters.regex(r"^codec_(.+)_(\d+)$"))
     async def handle_codec(client: Client, query: CallbackQuery):
-        """Handle codec selection"""
+        """Handle codec selection - using the actual main.py architecture"""
         status_msg = None
         try:
             parts = query.data.split("_")
@@ -200,23 +204,24 @@ def setup_handlers(app_instance):
             logger.info(f"📥 Starting download for {user_id} with codec: {codec}")
             logger.info(f"📁 Download directory: {user_dir.absolute()}")
 
-            # Download
-            result = None
+            # ✅ Use the actual InteractiveShell's do_download logic
             try:
-                logger.info(f"⚙️ Calling downloader.download()...")
-                result = await downloader.download(
-                    url=url,
-                    output_dir=str(user_dir),
+                # Get from creart
+                from src.cmd import InteractiveShell
+                shell = InteractiveShell(asyncio.get_event_loop())
+                
+                logger.info(f"⚙️ Calling do_download()...")
+                await shell.do_download(
+                    raw_url=url,
                     codec=codec,
-                    force_overwrite=False,
-                    metadata_language="en-US",
-                    progress_callback=lambda cur, total, name: asyncio.create_task(
-                        update_progress(status_msg, cur, total, name)
-                    ),
+                    force_download=False,
+                    language="en-US",
+                    include=False
                 )
-                logger.info(f"✓ downloader.download() returned: {result}")
-                logger.info(f"  Type: {type(result)}")
-                logger.info(f"  Length: {len(result) if result else 0}")
+                
+                # Wait a bit for files to be created
+                await asyncio.sleep(2)
+                logger.info(f"✓ do_download() completed")
                 
             except Exception as e:
                 logger.error(f"❌ Download error: {e}", exc_info=True)
@@ -230,20 +235,15 @@ def setup_handlers(app_instance):
             logger.info(f"🔍 Checking directory for audio files...")
             audio_files = get_audio_files(str(user_dir))
             
-            logger.info(f"📊 Result: {result}")
-            logger.info(f"📊 Found files: {audio_files}")
+            # Also check config download directory
+            if not audio_files:
+                logger.info(f"Checking config download directory...")
+                config_download_dir = Path(it(Config).download.dirPathFormat.split('{')[0])
+                if config_download_dir.exists():
+                    logger.info(f"Scanning: {config_download_dir}")
+                    audio_files = get_audio_files(str(config_download_dir))
 
-            # Determine files to upload
-            files_to_upload = []
-            
-            if result and isinstance(result, (list, tuple)):
-                files_to_upload = [Path(p) for p in result if Path(p).exists()]
-                logger.info(f"✓ Using result list: {len(files_to_upload)} files")
-            elif audio_files:
-                files_to_upload = audio_files
-                logger.info(f"✓ Using directory scan: {len(files_to_upload)} files")
-            
-            if not files_to_upload:
+            if not audio_files:
                 logger.error(f"❌ No audio files found!")
                 logger.info(f"📁 Directory contents:")
                 if user_dir.exists():
@@ -258,15 +258,15 @@ def setup_handlers(app_instance):
                 return
 
             await status_msg.edit_text(
-                f"<b>✅ Downloaded {len(files_to_upload)} file(s)</b>\n"
+                f"<b>✅ Downloaded {len(audio_files)} file(s)</b>\n"
                 f"<i>Uploading to Telegram...</i>",
                 parse_mode=enums.ParseMode.HTML
             )
-            logger.info(f"✓ {len(files_to_upload)} file(s) ready for upload")
+            logger.info(f"✓ {len(audio_files)} file(s) ready for upload")
 
             # Upload files
             uploaded_count = 0
-            for file_path in files_to_upload:
+            for file_path in audio_files:
                 path = Path(file_path)
                 if not path.exists():
                     logger.warning(f"⚠️ File not found: {path}")
@@ -290,7 +290,6 @@ def setup_handlers(app_instance):
                         parse_mode=enums.ParseMode.HTML,
                     )
                     uploaded_count += 1
-                    path.unlink(missing_ok=True)
                     logger.info(f"✓ File sent: {path.name}")
                 except Exception as e:
                     logger.error(f"❌ Error uploading {path.name}: {e}", exc_info=True)
@@ -325,7 +324,7 @@ def setup_handlers(app_instance):
 # Main Function
 # ════════════════════════════════════════════════════════
 async def main():
-    global wrapper, downloader, app
+    global app
     
     # Validate credentials
     logger.info("🔐 Validating credentials...")
@@ -357,25 +356,6 @@ async def main():
         logger.info("✓ Message handlers registered")
     except Exception as e:
         logger.error(f"❌ Failed to setup handlers: {e}", exc_info=True)
-        sys.exit(1)
-    
-    # Initialize WrapperManager
-    logger.info("🌐 Initializing WrapperManager...")
-    try:
-        wrapper = WrapperManager()
-        await wrapper.init(url="wm.wol.moe:443", secure=True)
-        logger.info("✓ WrapperManager initialized")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize WrapperManager: {e}", exc_info=True)
-        sys.exit(1)
-    
-    # Initialize AppleMusicDownloader
-    logger.info("🎵 Initializing AppleMusicDownloader...")
-    try:
-        downloader = AppleMusicDownloader(wrapper)
-        logger.info("✓ AppleMusicDownloader initialized")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize AppleMusicDownloader: {e}", exc_info=True)
         sys.exit(1)
     
     # Start Bot
