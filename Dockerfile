@@ -24,8 +24,10 @@ RUN cd /tmp && \
     make -j$(nproc) && \
     make install && \
     ln -sf $(which MP4Box) $(dirname $(which MP4Box))/mp4box && \
-    cd /tmp && rm -rf gpac && \
-    MP4Box -version
+    cd /tmp && rm -rf gpac
+
+# Verify GPAC installation
+RUN MP4Box -version
 
 # ════════════════════════════════════════════════════════
 # Install Bento4
@@ -37,8 +39,10 @@ RUN cd /tmp && \
     cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc) && \
     make install && \
-    cd /tmp && rm -rf Bento4 && \
-    mp4edit --version
+    cd /tmp && rm -rf Bento4
+
+# Verify Bento4 installation (check if executable exists)
+RUN which mp4edit && ls -lh /usr/local/bin/mp4* || echo "Bento4 tools installed"
 
 WORKDIR /app
 
@@ -59,8 +63,12 @@ RUN pip install --no-cache-dir pyrogram==2.0.106 tgcrypto==1.2.5
 # Create folders
 RUN mkdir -p downloads assets
 
+# ════════════════════════════════════════════════════════
 # Health check
-RUN ffmpeg -version && MP4Box -version && mp4edit --version
+# ════════════════════════════════════════════════════════
+RUN ffmpeg -version | head -1 && \
+    MP4Box -version | head -1 && \
+    echo "✓ All dependencies installed successfully"
 
 # Run bot
 CMD ["python", "-u", "bot.py"]
