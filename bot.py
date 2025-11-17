@@ -1,4 +1,4 @@
-# bot.py name=bot.py url=https://github.com/mkkafarm28/AppleMusicALAC/blob/v2/bot.py
+# bot.py name=bot.py
 import asyncio
 import os
 import sys
@@ -12,6 +12,7 @@ from pyrogram.types import (
 )
 import logging
 import subprocess
+import time
 
 # ════════════════════════════════════════════════════════
 # Setup Logging
@@ -47,98 +48,78 @@ USER_STATE = {}
 
 
 # ════════════════════════════════════════════════════════
-# Download Function
+# Download Function - Using main.py approach
 # ════════════════════════════════════════════════════════
 async def download_music(url: str, output_dir: str, codec: str) -> list:
     """
-    Download music using subprocess with proper config handling
+    Download music by calling main.py's command structure
     """
     logger.info(f"🎵 Download started: {url} [{codec}]")
     
     try:
-        # Create download script
+        # Create a minimal wrapper script that mimics main.py
         script = f"""
 import sys
+import os
 sys.path.insert(0, '/app')
+os.chdir('/app')
 
-# Register all creart creators
+# Initialize like main.py does
+import asyncio
 from creart import add_creator, it
 
-from src.measurer import MeasurerCreator
-add_creator(MeasurerCreator)
+loop = asyncio.new_event_loop()
 
+# Import and add ALL creators
 from src.logger import LoggerCreator
 add_creator(LoggerCreator)
 
-from src.config import ConfigCreator, Config
+from src.config import ConfigCreator
 add_creator(ConfigCreator)
 
 from src.api import APICreator
 add_creator(APICreator)
 
-from src.grpc.manager import WMCreator, WrapperManager
+from src.grpc.manager import WMCreator
 add_creator(WMCreator)
 
-import asyncio
+from src.measurer import MeasurerCreator
+add_creator(MeasurerCreator)
 
-async def download():
-    logger = it(LoggerCreator).logger
-    config = it(Config)
-    
+# Now run the download command
+from src.cmd import InteractiveShell
+
+async def run_download():
     try:
-        logger.info(f"Wrapper Manager Init: url={{config.instance.url}}, secure={{config.instance.secure}}")
-        
-        # Initialize WrapperManager with config
-        await it(WrapperManager).init(config.instance.url, config.instance.secure)
-        logger.info("✓ WrapperManager initialized")
-        
-        from src.cmd import AppleMusicURL, URLType
-        from src.rip import rip_song, rip_album, rip_artist, rip_playlist
-        from src.utils import GlobalLogger
-        
-        logger = GlobalLogger().logger
-        
-        raw_url = '{url}'
-        codec = '{codec}'
-        
-        logger.info(f"Download: {{raw_url}} [{{codec}}]")
-        
-        # Parse URL
-        url_obj = AppleMusicURL.parse_url(raw_url)
-        if not url_obj:
-            logger.error("URL parse failed")
-            return
-        
-        logger.info(f"Parsed: type={{url_obj.type}}, id={{url_obj.id}}, storefront={{url_obj.storefront}}")
-        
-        # Download based on type
-        if url_obj.type == URLType.Song:
-            logger.info("Downloading song...")
-            await rip_song(url_obj, codec)
-        elif url_obj.type == URLType.Album:
-            logger.info("Downloading album...")
-            await rip_album(url_obj, codec)
-        elif url_obj.type == URLType.Artist:
-            logger.info("Downloading artist...")
-            await rip_artist(url_obj, codec)
-        elif url_obj.type == URLType.Playlist:
-            logger.info("Downloading playlist...")
-            await rip_playlist(url_obj, codec)
-        
-        logger.info("✓ Download completed")
-        
+        shell = InteractiveShell(loop)
+        await shell.do_download(
+            raw_url='{url}',
+            codec='{codec}',
+            force_download=False,
+            language='en-US',
+            include=False
+        )
+        # Wait for background tasks
+        await asyncio.sleep(5)
     except Exception as e:
-        logger.error(f"Download error: {{e}}", exc_info=True)
-        raise
+        print(f"ERROR: {{e}}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
 
-asyncio.run(download())
+try:
+    loop.run_until_complete(run_download())
+except Exception as e:
+    print(f"FATAL: {{e}}", file=sys.stderr)
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
 """
         
         # Write script
         temp_script = Path("/tmp/download_runner.py")
         temp_script.write_text(script)
         
-        logger.info(f"Running download script with 15min timeout...")
+        logger.info(f"Executing download script (15min timeout)...")
         
         # Execute in subprocess
         result = subprocess.run(
@@ -146,30 +127,56 @@ asyncio.run(download())
             cwd="/app",
             timeout=900,  # 15 minutes
             capture_output=True,
-            text=True
+            text=True,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"}
         )
         
         # Log output
         if result.stdout:
             logger.info(f"Download output:\n{result.stdout}")
         if result.stderr:
-            logger.warning(f"Download stderr:\n{result.stderr}")
+            logger.warning(f"Download errors:\n{result.stderr}")
         
         if result.returncode != 0:
-            logger.error(f"Download failed with code {result.returncode}")
+            logger.error(f"Download script failed with code {result.returncode}")
         
         # Wait for file writing
         await asyncio.sleep(3)
         
-        # Find audio files
-        output_path = Path(output_dir)
+        # Check multiple possible download locations
         audio_files = []
         
+        # 1. Check user's personal directory
+        output_path = Path(output_dir)
         if output_path.exists():
             for ext in ['.m4a', '.mp3', '.flac', '.aac', '.alac', '.wav']:
                 audio_files.extend(output_path.glob(f"*{ext}"))
         
-        logger.info(f"✓ Found {len(audio_files)} audio file(s)")
+        # 2. Check config download directory
+        if not audio_files:
+            try:
+                from creart import add_creator, it
+                from src.config import ConfigCreator, Config
+                add_creator(ConfigCreator)
+                
+                config_dir = Path(it(Config).download.dirPathFormat)
+                logger.info(f"Checking config directory: {config_dir}")
+                if config_dir.exists():
+                    for ext in ['.m4a', '.mp3', '.flac', '.aac', '.alac', '.wav']:
+                        found = list(config_dir.glob(f"**/*{ext}"))
+                        if found:
+                            audio_files.extend(found)
+                            logger.info(f"Found {len(found)} files in {config_dir}")
+            except Exception as e:
+                logger.debug(f"Could not check config dir: {e}")
+        
+        # 3. Check downloads folder recursively
+        if not audio_files:
+            logger.info("Checking downloads folder recursively...")
+            for ext in ['.m4a', '.mp3', '.flac', '.aac', '.alac', '.wav']:
+                audio_files.extend(Path("downloads").glob(f"**/*{ext}"))
+        
+        logger.info(f"✓ Total audio files found: {len(audio_files)}")
         for f in audio_files:
             size_mb = f.stat().st_size / (1024**2)
             logger.info(f"  - {f.name} ({size_mb:.2f} MB)")
@@ -192,7 +199,7 @@ def setup_handlers(app_instance):
     
     @app_instance.on_message(filters.command("start"))
     async def start(client: Client, message: Message):
-        logger.info(f"📌 /start from user {message.from_user.id}")
+        logger.info(f"📌 /start from {message.from_user.id}")
         try:
             await message.reply(
                 "<b>🎵 Apple Music Downloader</b>\n\n"
@@ -216,16 +223,13 @@ def setup_handlers(app_instance):
         logger.info(f"🔗 URL from {user_id}: {url}")
 
         try:
-            # Validate URL
             if "music.apple.com" not in url:
                 await message.reply(
-                    "❌ Invalid Apple Music URL\n\n"
-                    "Example: https://music.apple.com/us/album/name/1234567890",
+                    "❌ Invalid Apple Music URL",
                     parse_mode=enums.ParseMode.HTML
                 )
                 return
 
-            # Create codec selection buttons
             buttons = []
             for codec_key, codec_name in CODECS.items():
                 buttons.append([
@@ -245,93 +249,78 @@ def setup_handlers(app_instance):
                 disable_web_page_preview=True
             )
             
-            # Store user state
             USER_STATE[user_id] = {"url": url, "msg_id": status_msg.id}
-            logger.info(f"✓ Codec menu sent to {user_id}")
+            logger.info(f"✓ Codec menu sent")
             
         except Exception as e:
-            logger.error(f"Error in handle_url: {e}")
+            logger.error(f"Error: {e}")
 
     @app_instance.on_callback_query(filters.regex(r"^codec_(.+)_(\d+)$"))
     async def handle_codec(client: Client, query: CallbackQuery):
-        """Handle codec selection and download"""
+        """Handle codec selection"""
         status_msg = None
         try:
             parts = query.data.split("_")
             codec = parts[1]
             user_id = query.from_user.id
             
-            logger.info(f"🎵 Codec selected: {codec} by {user_id}")
+            logger.info(f"🎵 Codec: {codec}")
 
-            # Validate session
             if user_id not in USER_STATE:
-                await query.answer("❌ Session expired. Send URL again.", show_alert=True)
-                logger.warning(f"Session expired for {user_id}")
+                await query.answer("Session expired", show_alert=True)
                 return
 
             state = USER_STATE[user_id]
             url = state["url"]
             status_msg_id = state["msg_id"]
 
-            # Update status message
             try:
                 status_msg = await app_instance.get_messages(query.message.chat.id, status_msg_id)
                 await status_msg.edit_text(
-                    f"<b>⏳ Downloading with {CODECS[codec]}...</b>\n\n"
-                    f"<code>{url}</code>",
+                    f"<b>⏳ Downloading {CODECS[codec]}...</b>\n<code>{url}</code>",
                     parse_mode=enums.ParseMode.HTML
                 )
             except:
                 status_msg = await query.message.reply(
-                    f"<b>⏳ Downloading with {CODECS[codec]}...</b>",
+                    f"<b>⏳ Downloading...</b>",
                     parse_mode=enums.ParseMode.HTML
                 )
 
             USER_STATE.pop(user_id, None)
 
-            # Create download directory
             user_dir = DOWNLOAD_BASE_DIR / str(user_id)
             user_dir.mkdir(parents=True, exist_ok=True)
 
-            logger.info(f"📥 Starting download for {user_id} with {codec}")
+            logger.info(f"📥 Download for {user_id}")
 
-            # Download music
+            # Download
             audio_files = await download_music(url, str(user_dir), codec)
 
             if not audio_files:
                 await status_msg.edit_text(
-                    "❌ Download failed. No audio files generated.\n\n"
-                    "Possible issues:\n"
-                    "• Invalid URL\n"
-                    "• Wrapper-manager connection issue\n"
-                    "• Codec not available",
+                    "❌ No files generated",
                     parse_mode=enums.ParseMode.HTML
                 )
-                logger.error(f"No files generated for {user_id}")
                 return
 
-            # Update status
             await status_msg.edit_text(
-                f"<b>✅ Downloaded {len(audio_files)} file(s)</b>\n"
-                f"<i>Uploading to Telegram...</i>",
+                f"<b>✅ {len(audio_files)} file(s)</b>\n<i>Uploading...</i>",
                 parse_mode=enums.ParseMode.HTML
             )
 
-            # Upload files to Telegram
+            # Upload
             uploaded_count = 0
             for file_path in audio_files:
                 path = Path(file_path)
                 if not path.exists():
-                    logger.warning(f"File not found: {path}")
                     continue
 
                 file_size = path.stat().st_size
                 if file_size > MAX_FILE_SIZE:
-                    logger.warning(f"File too large: {path.name} ({file_size/(1024**3):.2f} GB)")
                     continue
 
                 try:
-                    logger.info(f"📤 Uploading: {path.name} ({file_size/(1024**2):.2f} MB)")
+                    logger.info(f"📤 Uploading: {path.name}")
                     await query.message.reply_audio(
                         audio=str(path),
                         caption=f"<code>{path.name}</code>",
@@ -339,53 +328,40 @@ def setup_handlers(app_instance):
                         parse_mode=enums.ParseMode.HTML,
                     )
                     uploaded_count += 1
-                    logger.info(f"✓ Uploaded: {path.name}")
                 except Exception as e:
-                    logger.error(f"Upload failed for {path.name}: {e}")
+                    logger.error(f"Upload error: {e}")
 
-            # Clean up and send final message
             try:
                 await status_msg.delete()
             except:
                 pass
             
             await query.message.reply(
-                f"<b>✅ Upload Complete!</b>\n"
-                f"<i>{uploaded_count} file(s) sent successfully</i>",
+                f"<b>✅ Complete!</b>\n{uploaded_count} file(s) sent",
                 parse_mode=enums.ParseMode.HTML
             )
-            logger.info(f"✓ Download completed for {user_id}")
 
         except Exception as e:
-            logger.error(f"Error in handle_codec: {e}", exc_info=True)
+            logger.error(f"Error: {e}")
             if status_msg:
                 try:
-                    await status_msg.edit_text(
-                        f"<b>❌ Error:</b>\n<code>{str(e)[:100]}</code>",
-                        parse_mode=enums.ParseMode.HTML
-                    )
+                    await status_msg.edit_text(f"❌ Error", parse_mode=enums.ParseMode.HTML)
                 except:
                     pass
 
 
 # ════════════════════════════════════════════════════════
-# Main Function
+# Main
 # ════════════════════════════════════════════════════════
 async def main():
     global app
     
-    # Validate credentials
     logger.info("🔐 Validating credentials...")
     if not API_ID or not API_HASH or not BOT_TOKEN:
-        logger.error("❌ Missing API_ID, API_HASH, or BOT_TOKEN")
+        logger.error("❌ Missing credentials")
         sys.exit(1)
     
-    logger.info(f"✓ API_ID: {API_ID}")
-    logger.info(f"✓ API_HASH: {API_HASH[:10]}...")
-    logger.info(f"✓ BOT_TOKEN: {BOT_TOKEN[:20]}...")
-    
-    # Initialize Pyrogram Client
-    logger.info("📱 Initializing Pyrogram Client...")
+    logger.info("📱 Initializing client...")
     try:
         app = Client(
             "applemusic_bot",
@@ -393,52 +369,37 @@ async def main():
             api_hash=API_HASH,
             bot_token=BOT_TOKEN,
         )
-        logger.info("✓ Pyrogram Client initialized")
     except Exception as e:
-        logger.error(f"❌ Failed to initialize client: {e}")
+        logger.error(f"❌ Failed: {e}")
         sys.exit(1)
     
-    # Setup handlers
-    logger.info("📌 Setting up message handlers...")
-    try:
-        setup_handlers(app)
-        logger.info("✓ Message handlers registered")
-    except Exception as e:
-        logger.error(f"❌ Failed to setup handlers: {e}")
-        sys.exit(1)
+    logger.info("📌 Setting up handlers...")
+    setup_handlers(app)
     
-    # Start Bot
-    logger.info("🤖 Starting Bot...")
+    logger.info("🤖 Starting bot...")
     try:
         await app.start()
-        logger.info("✓✓✓ BOT STARTED SUCCESSFULLY ✓✓✓")
-        logger.info("📲 Bot is now listening for messages...")
-        logger.info("=" * 60)
+        logger.info("✅ BOT STARTED")
     except Exception as e:
-        logger.error(f"❌ Failed to start bot: {e}")
+        logger.error(f"❌ Failed: {e}")
         sys.exit(1)
     
-    # Idle
-    logger.info("⏳ Bot is now idle and waiting for messages...")
+    logger.info("⏳ Ready for messages...")
     try:
         await idle()
     except KeyboardInterrupt:
-        logger.info("🛑 Shutting down...")
+        logger.info("Stopping...")
     finally:
-        logger.info("Stopping bot...")
         await app.stop()
-        logger.info("✓ Bot stopped")
 
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("🚀 APPLE MUSIC TELEGRAM BOT")
+    logger.info("🚀 APPLE MUSIC BOT")
     logger.info("=" * 60)
     
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Interrupted by user")
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}", exc_info=True)
+        logger.error(f"❌ Error: {e}")
         sys.exit(1)
