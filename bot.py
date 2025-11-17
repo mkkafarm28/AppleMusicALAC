@@ -1,4 +1,4 @@
-# bot.py
+# bot.py (အဓိက အပြောင်းအလဲ)
 import asyncio
 import os
 import logging
@@ -65,8 +65,9 @@ async def update_progress(msg: Message, cur: int, total: int, name: str):
 def setup_handlers(app_instance):
     """Setup all bot handlers"""
     
-    @app_instance.on_message(filters.regex(r'^/start'))
+    @app_instance.on_message(filters.command("start"))
     async def start(client: Client, message: Message):
+        """Handle /start command"""
         logger.info(f"📌 /start command received from user {message.from_user.id}")
         try:
             await message.reply(
@@ -82,9 +83,13 @@ def setup_handlers(app_instance):
         except Exception as e:
             logger.error(f"❌ Error in /start handler: {e}", exc_info=True)
 
-    @app_instance.on_message(filters.text & ~filters.command)
+    @app_instance.on_message(filters.text)
     async def handle_url(client: Client, message: Message):
         """Handle URL messages"""
+        # Skip if it's a command
+        if message.text.startswith('/'):
+            return
+        
         url = message.text.strip()
         user_id = message.from_user.id
         logger.info(f"🔗 URL received from {user_id}: {url}")
@@ -298,8 +303,12 @@ async def main():
     
     # Setup handlers AFTER app is initialized
     logger.info("📌 Setting up message handlers...")
-    setup_handlers(app)
-    logger.info("✓ Message handlers registered")
+    try:
+        setup_handlers(app)
+        logger.info("✓ Message handlers registered")
+    except Exception as e:
+        logger.error(f"❌ Failed to setup handlers: {e}", exc_info=True)
+        sys.exit(1)
     
     # Initialize WrapperManager
     logger.info("🌐 Initializing WrapperManager...")
