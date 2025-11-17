@@ -3,7 +3,7 @@ import asyncio
 import os
 import logging
 from pathlib import Path
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import (
     Message,
     InlineKeyboardButton,
@@ -14,21 +14,18 @@ from src.grpc.manager import WrapperManager
 from src.core.downloader import AppleMusicDownloader
 from src.utils import GlobalLogger
 
-# ----------------------------------------------------------------------
 # Config
-# ----------------------------------------------------------------------
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DOWNLOAD_BASE_DIR = Path("downloads")
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB
+MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
 logger = GlobalLogger().logger
 
 wrapper: WrapperManager = None
 downloader: AppleMusicDownloader = None
 app = Client("applemusic_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Codec options
 CODECS = {
     "alac": "ALAC (Lossless)",
     "aac": "AAC (256 kbps)",
@@ -39,13 +36,9 @@ CODECS = {
     "ac3": "AC3",
 }
 
-# User state: {user_id: {"url": str, "msg_id": int}}
 USER_STATE = {}
 
 
-# ----------------------------------------------------------------------
-# Progress update
-# ----------------------------------------------------------------------
 async def update_progress(msg: Message, cur: int, total: int, name: str):
     if total == 0:
         return
@@ -58,9 +51,6 @@ async def update_progress(msg: Message, cur: int, total: int, name: str):
         pass
 
 
-# ----------------------------------------------------------------------
-# Handlers
-# ----------------------------------------------------------------------
 @app.on_message(filters.regex(r'^/start'))
 async def start(client: Client, message: Message):
     logger.info("Start command received")
@@ -80,11 +70,10 @@ async def start(client: Client, message: Message):
 @app.on_message(filters.text)
 async def handle_url(client: Client, message: Message):
     if message.text.startswith('/'):
-        return  # Skip command messages
+        return
     url = message.text.strip()
     user_id = message.from_user.id
 
-    # Show codec buttons
     buttons = [[InlineKeyboardButton(text=v, callback_data=f"codec_{k}_{message.id}")] for k, v in CODECS.items()]
     keyboard = InlineKeyboardMarkup(buttons)
 
@@ -95,7 +84,6 @@ async def handle_url(client: Client, message: Message):
         disable_web_page_preview=True
     )
 
-    # Store state
     USER_STATE[user_id] = {"url": url, "msg_id": status_msg.id}
 
 
@@ -114,17 +102,14 @@ async def handle_codec(client: Client, query: CallbackQuery):
     url = state["url"]
     status_msg_id = state["msg_id"]
 
-    # Edit to confirm
     try:
         status_msg = await app.get_messages(query.message.chat.id, status_msg_id)
         await status_msg.edit_text(f"Downloading with **{CODECS[codec]}**...\n\n`{url}`")
     except:
         status_msg = await query.message.reply(f"Downloading with **{CODECS[codec]}**...")
 
-    # Cleanup state
     USER_STATE.pop(user_id, None)
 
-    # Download
     user_dir = DOWNLOAD_BASE_DIR / str(user_id)
     user_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,16 +154,34 @@ async def handle_codec(client: Client, query: CallbackQuery):
         await status_msg.edit(f"Error: {str(e)}")
 
 
-# ----------------------------------------------------------------------
-# Main
-# ----------------------------------------------------------------------
 async def main():
     global wrapper, downloader
-    wrapper = await WrapperManager().init(url="wm.wol.moe:443", secure=True)
-    downloader = AppleMusicDownloader(wrapper)
-    logger.info("Bot starting...")
+    
+    logger.info("Initializing WrapperManager...")
+    try:
+        wrapper = WrapperManager()
+        await wrapper.init(url="wm.wol.moe:443", secure=True)
+        logger.info("✓ WrapperManager initialized")
+    except Exception as e:
+        logger.error(f"✗ Failed to initialize WrapperManager: {e}")
+        raise
+    
+    try:
+        downloader = AppleMusicDownloader(wrapper)
+        logger.info("✓ AppleMusicDownloader initialized")
+    except Exception as e:
+        logger.error(f"✗ Failed to initialize AppleMusicDownloader: {e}")
+        raise
+    
+    logger.info("🤖 Bot starting...")
     await app.start()
-    await asyncio.Event().wait()
+    logger.info("✓ Bot started successfully")
+    
+    # ✅ ဒီန်ဆာကုကြည့် - idle() သုံးတယ်
+    await idle()
+    
+    logger.info("Bot shutting down...")
+    await app.stop()
 
 
 if __name__ == "__main__":
